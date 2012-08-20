@@ -11,12 +11,23 @@ import org.apache.commons.math3.util.{ArithmeticUtils, MathUtils}
  */
 
 class SentenceBoundaryDetector(text: String) {
-  val regex = """\w+'*[\.\-\w]*"""
-  var mutableMap = Set.empty[String]
+  val S = 1
+  val A = 2
+  val E = 3
+  val regex = """\w+'[\.\-\w]+|\w+[\.\-\w]*"""
+  val mutableMap = Set.empty[String]
 
-  //val tokens = text.split( """(?![(\w')\.-])[\p{P}\s\r\n]+""")
+  val tokenIt = regex.r.findAllIn(text)
+  val mutableList = scala.collection.mutable.ListBuffer[(String,Int,String)]()
+  var prevToken = ""
+  while(tokenIt.hasNext) {
+    val temp = tokenIt.next()
+    mutableList++=Seq((temp,tokenIt.start,prevToken))
+    prevToken = temp
+  }
+  val tokens = mutableList.toList
 
-  val tokens = regex.r.findAllIn(text).zipWithIndex toSeq
+  val TOKEN_MAP = tokens.groupBy(x => x._1.toLowerCase)
 
   val wordCount = tokens.groupBy(x => x._1.toLowerCase).mapValues(_.length)
   val periodCount = wordCount.filter {
@@ -24,10 +35,10 @@ class SentenceBoundaryDetector(text: String) {
   }.foldLeft(0)((acc, kv) => acc + kv._2)
   val N_words = tokens.length
   val N = N_words+ periodCount
+
   class TypeBasedClassifier {
-    //only periods that occur at word boundary
+
     val p = periodCount.asInstanceOf[Double] / N
-    //null hypothesis
 
     val distinctWords = tokens.map(t => {
       if (t._1.endsWith(".")) {
@@ -37,28 +48,69 @@ class SentenceBoundaryDetector(text: String) {
         t._1.toLowerCase
       }
     }).toSet
-    val likelihoodRatios = distinctWords.map(w => {
+
+    val likelihoodRatios = distinctWords.flatMap(w => {
       val i1 = wordCount.getOrElse(w, 0) //count of word without period
       val i2 = wordCount.getOrElse(w + ".", 0) //count of word with period
-      if (i2!=0) mutableMap += w
-      val n1 = i1+i2
-      val n2 = N-i1-i2
-      val k1 = i2
-      val k2 = periodCount - i2
-      val p1 = 0.99
-      val p2 = k2/n2.asInstanceOf[Double]
-      val flength = 1/math.exp(w.replaceAll("""\.""","").length)
-      val fperiods = """\.""".r.findAllIn(w).length + 1 //number of internal periods
-      w -> SentenceBoundaryDetectorUtils.logLikehoodRatio(n1,k1,p1,n2,k2,p2,p)*flength*fperiods
+      if (i2!=0) {
+        val n1 = i1+i2
+        val n2 = N-i1-i2
+        val k1 = i2
+        val k2 = periodCount - i2
+        val p1 = 0.99
+        val p2 = k2/n2.asInstanceOf[Double]
+        val fLength = 1/math.exp(w.replaceAll("""\.""","").length)
+        val fPeriods = """\.""".r.findAllIn(w).length + 1 //number of internal periods
+        Seq(w -> SentenceBoundaryDetectorUtils.logLikehoodRatio(n1,k1,p1,n2,k2,p2,p)*fLength*fPeriods)
+      }
+      else Nil
     })
+
+    def applyTypeBasedClassifier:String ={
+      val textBuf = new StringBuilder(text.length)
+      var lastPos = 0
+      //val tokenMap = tokens.groupBy(x => x._1.toLowerCase)
+      val replaceList = likelihoodRatios.flatMap(kv=> {
+       if(kv._2>=0.3){
+         TOKEN_MAP.get(kv._1+".").get.map(token=>{
+           (token._1,token._2,token._3,A)
+//           println(token._1+" : "+token._2)
+//           textBuf.append(text.substring(lastPos,token._2)+token._1+"<A>")
+//           lastPos=token._2+(token._1).length+3
+         })
+       }else{
+         TOKEN_MAP.get(kv._1+".").get.map(token=>{
+           (token._1,token._2,token._3,S)
+//           println(token._1+" : "+token._2)
+//           textBuf.append(text.substring(lastPos,token._2)+token._1+"<S>")
+//           lastPos=token._2+(token._1).length+3
+         })
+       }
+      }).toList
+      replaceList.sortBy(_._2).foreach(elem=>{
+        println(elem._1+" : "+elem._2+" : "+lastPos)
+        textBuf.append(text.substring(lastPos,elem._2)+elem._1)
+        lastPos=elem._2+(elem._1).length-3
+
+      })
+      textBuf.append(text.substring(lastPos))
+      return textBuf.toString()
+    }
+
   }
 
-  def getWordList = new TypeBasedClassifier().likelihoodRatios.filter(x=> mutableMap(x._1)).toList sortBy{_._2}
 
-  class TokenBasedClassifier(text:String) {
+
+
+  def getWordList = new TypeBasedClassifier().likelihoodRatios.toList sortBy{_._2}
+
+  def getOutput = new TypeBasedClassifier().applyTypeBasedClassifier
+
+  class TokenBasedClassifier(text:String,tokenMap:List[(String, Int, String, Int)]) {
     //val sList = """(?<=<S>)\b.+?\b""".r findAllIn(text) toSet
-    val aList = """(?<=<A>)\b.+?\b""".r findAllIn(text) toList
-    val eList = """(?<=<E>)\b.+?\b""".r findAllIn(text) toList
+    //val text = text.replaceAll("""<[AES]>.*(?!\w)""","")
+    val aList = """(?<=<[A]>)\s*.+?(\w+'[\.\-\w]+|\w+[\.\-\w]*)""".r findAllIn(text) toList //"""(?<=<A>)\b.+?\b""".r findAllIn(text) toList
+    val eList = """(?<=<[A]>)\s*.+?(\w+'[\.\-\w]+|\w+[\.\-\w]*)""".r findAllIn(text) toList
     val aeList = aList++eList
     val UNDECIDED = 0
     val SENTENCE_BOUNDARY = 1
@@ -75,11 +127,11 @@ class SentenceBoundaryDetector(text: String) {
           UNDECIDED
         }
       }else{
-          if ((token.capitalize.r findFirstIn(this.text)).nonEmpty || ("""(?<=<S>)"""+token+"""\b""".r.findFirstIn(this.text)).isEmpty ){
-            return NO_SENTENCE_BOUNDARY
-          }else{
-            return UNDECIDED
-          }
+        if ((token.capitalize.r findFirstIn(this.text)).nonEmpty || ("""(?<=<S>)"""+token+"""\b""".r.findFirstIn(this.text)).isEmpty ){
+          return NO_SENTENCE_BOUNDARY
+        }else{
+          return UNDECIDED
+        }
       }
     }
     def collocationHeuristic{
@@ -143,7 +195,7 @@ object SentenceBoundaryDetectorUtils{
 object SentenceBoundaryDetector{
   def main(args:Array[String]) = {
     val text = Source.fromFile("/Users/harshal/Work/file.txt").getLines().mkString
-    new SentenceBoundaryDetector(text).getWordList.foreach(x=> println(x._1+" : "+x._2))
+    println(new SentenceBoundaryDetector(text).getOutput)
     //new SentenceBoundaryDetector(text).printWordCount
   }
 }
