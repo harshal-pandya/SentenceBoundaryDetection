@@ -1,3 +1,4 @@
+import collection.JavaConversions.MutableMapWrapper
 import io.Source
 
 class SentenceBoundaryDetector(text: String) {
@@ -18,16 +19,18 @@ class SentenceBoundaryDetector(text: String) {
    */
   val AS = 4
 
-  val (tokens,tokenStrings) = getTokens(text)
+  type TOKEN = (String,Int,String,Boolean)
+
+  val (tokens,tokenStrings,periodCount,tokenMap,distinctWords) = getTokens(text)
 
   WsjMakeDocument.writeToFile("/Users/harshal/Work/data/wsj/tokens.txt",tokenStrings.mkString("\n"))
 
-  val TOKEN_MAP = tokens.groupBy(x => x._1.toLowerCase)
+  //val TOKEN_MAP = tokens.groupBy(x => x._1.toLowerCase)
   /**
    * Stores the case-insensitive count of each distinct word
    * It counts a word and a word ending in a period as distinct
    */
-  val wordCount = TOKEN_MAP.mapValues(_.length)
+  val wordCount = tokenMap.mapValues(_.length)
   val N_words = tokens.length
 
   /**
@@ -46,30 +49,76 @@ class SentenceBoundaryDetector(text: String) {
     val regex = """\w+'[\.\-\w]+|\w+[\.\-\w]*(##abv##)?"""
     val tokenIt = regex.r.findAllIn(tempText)
     val tokenList = regex.r.findAllIn(text).toList
-    val mutableList = scala.collection.mutable.ListBuffer[(String,Int,String,Boolean)]()
+    val mutableList = scala.collection.mutable.ListBuffer[TOKEN]()
     val mutableList1 = scala.collection.mutable.ListBuffer[String]()
+    val mutableTokenMap = scala.collection.mutable.Map[String,List[TOKEN]]()
+    val mutableDistinctWordSet = scala.collection.mutable.Set[String]()
     var index = 1
+    var periodCount = 0
     while(tokenIt.hasNext) {
       var temp = tokenIt.next()
+
+      //if(temp.endsWith(".")) periodCount+=1
+
       if(temp.charAt(0).isDigit) {
         temp = isNumeric(temp)
       }
+
       if (index==tokenList.length){
-        if (temp.endsWith("##abv##"))
-          mutableList++=Seq((temp.substring(0,temp.length-"##abv##".length),tokenIt.start,"",true))
-        else
+        if (temp.endsWith("##abv##")){
+          if(temp.substring(0,temp.length-"##abv##".length).endsWith(".")){
+            periodCount+=1
+            mutableDistinctWordSet.add(temp.substring(0,temp.length-"##abv##".length-1).toLowerCase)
+          }else{
+            mutableDistinctWordSet.add(temp.substring(0,temp.length-"##abv##".length).toLowerCase)
+          }
+          mutableList++=Seq((temp.substring(0,temp.length-"##abv##".length),tokenIt.start,"##EOF##",true))
+          val tempList = mutableTokenMap.getOrElse(temp.substring(0,temp.length-"##abv##".length).toLowerCase,
+            List[TOKEN]())
+          mutableTokenMap.update(temp.substring(0,temp.length-"##abv##".length).toLowerCase,(temp.substring(0,
+            temp.length-"##abv##".length),tokenIt.start,"",true)::tempList)
+        }else{
+          if(temp.endsWith(".")){
+            periodCount+=1
+            mutableDistinctWordSet.add(temp.substring(0,temp.length-1).toLowerCase)
+          }else{
+            mutableDistinctWordSet.add(temp.substring(0,temp.length).toLowerCase)
+          }
           mutableList++=Seq((temp,tokenIt.start,"",false))
+          val tempList = mutableTokenMap.getOrElse(temp,List[TOKEN]())
+          mutableTokenMap.update(temp.toLowerCase,(temp,tokenIt.start,"",true)::tempList)
         }
+      }
       else{
-      if (temp.endsWith("##abv##"))
-        mutableList++=Seq((temp.substring(0,temp.length-"##abv##".length),tokenIt.start,tokenList(index),true))
-          else
-        mutableList++=Seq((temp,tokenIt.start,tokenList(index),false))
+        if (temp.endsWith("##abv##")){
+          if(temp.substring(0,temp.length-"##abv##".length).endsWith(".")){
+            periodCount+=1
+            mutableDistinctWordSet.add(temp.substring(0,temp.length-"##abv##".length-1).toLowerCase)
+          }else{
+            mutableDistinctWordSet.add(temp.substring(0,temp.length-"##abv##".length).toLowerCase)
+          }
+          mutableList++=Seq((temp.substring(0,temp.length-"##abv##".length),tokenIt.start,tokenList(index),true))
+          val tempList = mutableTokenMap.getOrElse(temp.substring(0,temp.length-"##abv##".length).toLowerCase,
+            List[TOKEN]())
+          mutableTokenMap.update(temp.substring(0,temp.length-"##abv##".length).toLowerCase,(temp.substring(0,
+            temp.length-"##abv##".length),tokenIt.start,"",true)::tempList)
         }
+        else{
+          if(temp.endsWith(".")){
+            periodCount+=1
+            mutableDistinctWordSet.add(temp.substring(0,temp.length-1).toLowerCase)
+          }else{
+            mutableDistinctWordSet.add(temp.substring(0,temp.length).toLowerCase)
+          }
+          mutableList++=Seq((temp,tokenIt.start,tokenList(index),false))
+          val tempList = mutableTokenMap.getOrElse(temp,List[TOKEN]())
+          mutableTokenMap.update(temp.toLowerCase,(temp,tokenIt.start,"",true)::tempList)
+        }
+      }
       mutableList1++=Seq(temp)
       index+=1
     }
-    (mutableList.toList,mutableList1.toList)
+    (mutableList.toList,mutableList1.toList,periodCount,mutableTokenMap.toMap,mutableDistinctWordSet.toSet)
   }
 
   /**
@@ -112,20 +161,20 @@ class SentenceBoundaryDetector(text: String) {
    * </p>
    */
   class TypeBasedClassifier {
-    val periodCount = wordCount.filter {
-      kv => kv._1.endsWith(".")
-    }.foldLeft(0)((acc, kv) => acc + kv._2)
+    //    val periodCount = wordCount.filter {
+    //      kv => kv._1.endsWith(".")
+    //    }.foldLeft(0)((acc, kv) => acc + kv._2)
     val N = N_words+ periodCount
     val p = periodCount.asInstanceOf[Double] / N
 
-    val distinctWords = tokens.map(t => {
-      if (t._1.endsWith(".")) {
-        t._1.substring(0, t._1.length - 1).toLowerCase
-      }
-      else {
-        t._1.toLowerCase
-      }
-    }).toSet
+//    val distinctWords = tokens.map(t => {
+//      if (t._1.endsWith(".")) {
+//        t._1.substring(0, t._1.length - 1).toLowerCase
+//      }
+//      else {
+//        t._1.toLowerCase
+//      }
+//    }).toSet
 
     val likelihoodRatios = distinctWords.filterNot(_.equals("##number##")).flatMap(w => {
       val i1 = wordCount.getOrElse(w, 0) //count of word without period
@@ -146,14 +195,14 @@ class SentenceBoundaryDetector(text: String) {
     })
 
     def apply() = {
-      val numList = TOKEN_MAP.get("##number##.").get.map(token=>(token._1,token._2,token._3,0,token._4))
+      val numList = tokenMap.get("##number##.").get.map(token=>(token._1,token._2,token._3,0,token._4))
       numList:::likelihoodRatios.flatMap(kv=> {
         if(kv._2>=0.3){
-          TOKEN_MAP.get(kv._1+".").get.map(token=>{
+          tokenMap.get(kv._1+".").get.map(token=>{
             (token._1,token._2,token._3,A,token._4)
           })
         }else{
-          TOKEN_MAP.get(kv._1+".").get.map(token=>{
+          tokenMap.get(kv._1+".").get.map(token=>{
             (token._1,token._2,token._3,S,token._4)
           })
         }
@@ -268,26 +317,26 @@ class SentenceBoundaryDetector(text: String) {
       })
 
       filteredList= tokenList.filter(token=>token._1.equals("##number##.") || token._1.matches("""\p{L}\."""))
-//      freqSentenceStarters = freqSentenceStarterHeuristic(filteredList).toSet
-//      collocationHeuristic(filteredList).filterNot{kv=> freqSentenceStarters(kv._3)}.foreach(colToken=>{
-//        mutableTokenList.update(colToken._2,colToken)
-//      })
+      //      freqSentenceStarters = freqSentenceStarterHeuristic(filteredList).toSet
+      //      collocationHeuristic(filteredList).filterNot{kv=> freqSentenceStarters(kv._3)}.foreach(colToken=>{
+      //        mutableTokenList.update(colToken._2,colToken)
+      //      })
       filteredList.foreach(token=>{
         //if(token._4==S){
-          //println(token._1)
-          val decision = decideOrthographic(token._3)
-          //if(decision==SENTENCE_BOUNDARY) mutableTokenList.update(token._2,(token._1,token._2,token._3,S))
-          if (decision==NO_SENTENCE_BOUNDARY) mutableTokenList.update(token._2,(token._1,token._2,token._3,A,token._5))
-          else if (!token._1.equals("##number##.") && decision==UNDECIDED && token._3.charAt(0).isUpper) mutableTokenList.update(token._2,(token._1,token._2,token._3,A,token._5))
+        //println(token._1)
+        val decision = decideOrthographic(token._3)
+        //if(decision==SENTENCE_BOUNDARY) mutableTokenList.update(token._2,(token._1,token._2,token._3,S))
+        if (decision==NO_SENTENCE_BOUNDARY) mutableTokenList.update(token._2,(token._1,token._2,token._3,A,token._5))
+        else if (!token._1.equals("##number##.") && decision==UNDECIDED && token._3.charAt(0).isUpper) mutableTokenList.update(token._2,(token._1,token._2,token._3,A,token._5))
         //}
       })
       mutableTokenList.values//.filter(_._4==A).map(token=>{
-//        if (token._1.equals("##number##.")){
-//          val origNum = """\p{Nd}+\.(\p{Nd}*\.)?""".r.findFirstIn(text.substring(token._2))
-//          (origNum.getOrElse(token._1),token._2,token._3,token._4,token._5)
-//        }
-//        else token
-//      })
+      //        if (token._1.equals("##number##.")){
+      //          val origNum = """\p{Nd}+\.(\p{Nd}*\.)?""".r.findFirstIn(text.substring(token._2))
+      //          (origNum.getOrElse(token._1),token._2,token._3,token._4,token._5)
+      //        }
+      //        else token
+      //      })
     }
 
   }
