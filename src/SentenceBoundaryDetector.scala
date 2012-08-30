@@ -1,6 +1,7 @@
 import io.Source
 
-class SentenceBoundaryDetector(text: String) {
+class SentenceBoundaryDetector(text: String,abvSet:Set[String] = Set[String]()) {
+
   /**
    * Sentence boundar marker
    */
@@ -43,7 +44,7 @@ class SentenceBoundaryDetector(text: String) {
     val regex = """\w+'[\.\-\w]+|\w+[\.\-\w]*"""
     val tokenIt = regex.r.findAllIn(text)
     val tokenList = regex.r.findAllIn(text).toArray
-    val mutableList = scala.collection.mutable.ArrayBuffer[(String, Int, String)]()
+    val mutableList = scala.collection.mutable.ArrayBuffer[(String, Int, String,Int)]()
     val mutableList1 = scala.collection.mutable.ArrayBuffer[String]()
     var index = 1
     while (tokenIt.hasNext) {
@@ -51,8 +52,14 @@ class SentenceBoundaryDetector(text: String) {
       if (temp.charAt(0).isDigit) {
         temp = isNumeric(temp)
       }
-      if (index == tokenList.length) mutableList ++= Seq((temp, tokenIt.start, ""))
-      else mutableList ++= Seq((temp, tokenIt.start, tokenList(index)))
+      if (index == tokenList.length) {
+        if (abvSet(temp)) mutableList ++= Seq((temp, tokenIt.start, "",A))
+        else mutableList ++= Seq((temp, tokenIt.start, "",0))
+      }
+      else {
+        if (abvSet(temp)) mutableList ++= Seq((temp, tokenIt.start, tokenList(index),A))
+        else mutableList ++= Seq((temp, tokenIt.start, tokenList(index),0))
+      }
       mutableList1 ++= Seq(temp)
       index += 1
     }
@@ -105,13 +112,9 @@ class SentenceBoundaryDetector(text: String) {
     val N = N_words + periodCount
     val p = periodCount.asInstanceOf[Double] / N
 
-    val distinctWords = tokens.map(t => {
-      if (t._1.endsWith(".")) {
-        t._1.substring(0, t._1.length - 1).toLowerCase
-      }
-      else {
-        t._1.toLowerCase
-      }
+    val distinctWords = tokens.filterNot(_._4==A).map(t => {
+      if (t._1.endsWith(".")) t._1.substring(0, t._1.length - 1).toLowerCase
+      else t._1.toLowerCase
     }).toSet
 
     val likelihoodRatios = distinctWords.filterNot(_.equals("##number##")).flatMap(w => {
@@ -130,8 +133,9 @@ class SentenceBoundaryDetector(text: String) {
     })
 
     def apply() = {
-      val numList = TOKEN_MAP.get("##number##.").get.map(token => (token._1, token._2, token._3, 0))
-      numList ::: likelihoodRatios.flatMap(kv => {
+      val preProcessedList = tokens.filter(_._4==A) //Words tagged as abvs using the precompiled list
+      val numList = TOKEN_MAP("##number##.").map(token => (token._1, token._2, token._3, 0))
+      preProcessedList ::: numList ::: likelihoodRatios.flatMap(kv => {
         if (kv._2 >= 0.3) {
           TOKEN_MAP.get(kv._1 + ".").get.map(token => {
             (token._1, token._2, token._3, A)
@@ -292,7 +296,7 @@ object SentenceBoundaryDetector {
     val text = Source.fromFile("/Users/harshal/Work/data/wsj/wsj_text.txt").getLines().mkString(" ")
     println("Started....")
     val startTime = System.currentTimeMillis()
-      SentenceBoundaryDetector(text).foreach(println(_))
-    println("Time elapsed: "+((System.currentTimeMillis()-startTime)/60000.0))
+      SentenceBoundaryDetector(text)//.foreach(println(_))
+    println("Time elapsed: "+((System.currentTimeMillis()-startTime)/1000.0))
   }
 }
